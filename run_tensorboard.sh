@@ -1,2 +1,2 @@
-tensorboard --logdir=logs --port="6006"
+python -m tensorboard.main --logdir=logs --port="6006"
 

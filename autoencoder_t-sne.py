@@ -87,16 +87,26 @@ import tensorflow as tf
 from tensorflow.contrib.tensorboard.plugins import projector
 from tensorflow.examples.tutorials.mnist import input_data
 
+import matplotlib.pyplot as plt
+from PIL import Image
+
 import numpy as np
 
 import argparse
 import sys
 import math
 import os
+import pathlib
 
 
 FLAGS = None
 NB_TEST_DATA = 10000
+NB_ATTACKED_DATA = 200
+ADV_LIST = [7, 2, 1, 0, 4, 1, 4, 9, 5, 9, 0, 6, 9, 0, 1, 5, 9, 7, 8, 4]
+
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+session = tf.Session(config=config)
 
 
 def autoencoder(dimensions=[784, 512, 256, 64]):
@@ -152,7 +162,7 @@ def autoencoder(dimensions=[784, 512, 256, 64]):
     return {'x': x, 'z': z, 'y': y, 'cost': cost}
 
 
-def train_autoencoder_and_embed():
+def train_autoencoder_and_embed(adv_examples_path=None):
     """Test the autoencoder using MNIST."""
     import tensorflow as tf
     import tensorflow.examples.tutorials.mnist.input_data as input_data
@@ -180,10 +190,29 @@ def train_autoencoder_and_embed():
             sess.run(optimizer, feed_dict={ae['x']: train})
         print(epoch_i, sess.run(ae['cost'], feed_dict={ae['x']: train}))
 
+    def load_adv_tiff_examples(adv_path):
+        data_root = pathlib.Path(adv_path)
+        all_image_paths = list(data_root.glob('*.tiff'))
+        all_image_paths = [str(path) for path in all_image_paths]
+
+        all_adv_images = []
+        for p in all_image_paths:
+            img = Image.open(p)
+            img = np.asarray(img)
+            img = img + 0.5
+            img = np.ndarray.reshape(img, 28 * 28)
+            all_adv_images.append(img)
+        return all_adv_images
+
     # Get embeddings.
     # If you have too much to get and that it does not fit in memory, you may
     # need to use a batch size or to force to use the CPU rather than the GPU.
     test = [img - mean_img for img in mnist.test.images]
+    if adv_examples_path:
+        adv = load_adv_tiff_examples(adv_examples_path)
+        adv = [img - mean_img for img in adv]
+        test.extend(adv)
+
     embedded_data = sess.run(
         ae['z'],
         feed_dict={ae['x']: test}
@@ -191,9 +220,9 @@ def train_autoencoder_and_embed():
     return embedded_data, sess
 
 
-def generate_embeddings():
+def generate_embeddings(adv_path=None):
     # Load data, train an autoencoder and transform data
-    embedded_data, sess = train_autoencoder_and_embed()
+    embedded_data, sess = train_autoencoder_and_embed(adv_examples_path=adv_path)
 
     # Input set for Embedded TensorBoard visualization
     # Performed with cpu to conserve memory and processing power
@@ -208,7 +237,7 @@ def generate_embeddings():
     # Add embedding tensorboard visualization. Need tensorflow version
     # >= 0.12.0RC0
     config = projector.ProjectorConfig()
-    embed= config.embeddings.add()
+    embed = config.embeddings.add()
     embed.tensor_name = 'embedding:0'
     embed.metadata_path = os.path.join(FLAGS.log_dir + '/projector/metadata.tsv')
     embed.sprite.image_path = os.path.join(FLAGS.data_dir + '/mnist_10k_sprite.png')
@@ -219,15 +248,20 @@ def generate_embeddings():
 
     # We save the embeddings for TensorBoard, setting the global step as
     # The number of data examples
+    step = NB_TEST_DATA
+    if adv_path:
+        step = step + NB_ATTACKED_DATA
     saver.save(sess, os.path.join(
-        FLAGS.log_dir, 'projector/a_model.ckpt'), global_step=NB_TEST_DATA)
+        FLAGS.log_dir, 'projector/a_model.ckpt'), global_step=step)
 
     sess.close()
 
-def generate_metadata_file():
+
+def generate_metadata_file(adv_path=None):
     # Import data
     mnist = input_data.read_data_sets(FLAGS.data_dir,
                                       one_hot=True)
+
     # The ".tsv" file will contain one number per row to point to the good label
     # for each test example in the dataset.
     # For example, labels could be saved as plain text on those lines if needed.
@@ -239,16 +273,36 @@ def generate_metadata_file():
             for i in range(NB_TEST_DATA):
                 c = np.nonzero(mnist.test.labels[::1])[1:][0][i]
                 f.write('{}\n'.format(c))
+            if adv_path:
+                data_root = pathlib.Path(adv_path)
+                all_image_paths = list(data_root.glob('*.tiff'))
+                all_image_paths = [str(path) for path in all_image_paths]
+
+                if len(all_image_paths) != NB_ATTACKED_DATA:
+                    print("adv example num mismatch: %s pictures in the path." % len(all_image_paths))
+
+                for ffn in all_image_paths:
+                    fn = ffn.split("\\")[-1]
+                    fid = int(fn.split("_")[0])
+                    label = str(ADV_LIST[fid])
+                    if fn.split("_")[1].find('input') != -1:
+                        label = label + "_input"
+                    else:
+                        label = label + "_adv"
+                    f.write('%s\n' % label)
 
     save_metadata(FLAGS.log_dir + '/projector/metadata.tsv')
+
 
 def main(_):
     if tf.gfile.Exists(FLAGS.log_dir + '/projector'):
         tf.gfile.DeleteRecursively(FLAGS.log_dir + '/projector')
         tf.gfile.MkDir(FLAGS.log_dir + '/projector')
     tf.gfile.MakeDirs(FLAGS.log_dir  + '/projector') # fix the directory to be created
-    generate_metadata_file()
-    generate_embeddings()
+    adv_path = r"C:\Users\bigwa\PycharmProjects\tensorflow_playground\nn_robust_attacks\output\tiff"
+    generate_metadata_file(adv_path=adv_path)
+    generate_embeddings(adv_path=adv_path)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
